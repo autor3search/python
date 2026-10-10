@@ -120,6 +120,18 @@ Two things worth knowing before you start it:
 Everything past this point is for the human setting the run up, or for
 understanding what the agent in step 6 is actually bound by.
 
+### Or install it as a skill
+
+The same prompt ships as an agent skill, in
+[`skills/autor3search-python`](skills/autor3search-python/SKILL.md). Install it once and ask your
+agent to make the repository faster; it loads the prompt itself.
+
+```sh
+mkdir -p ~/.claude/skills/autor3search-python
+curl -fsSL https://raw.githubusercontent.com/autor3search/python/main/skills/autor3search-python/SKILL.md \
+  -o ~/.claude/skills/autor3search-python/SKILL.md
+```
+
 ## The idea
 
 Five things make up a run, and they are owned by different parties on purpose:
