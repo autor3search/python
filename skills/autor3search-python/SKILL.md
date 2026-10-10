@@ -21,6 +21,8 @@ user. Follow every step and rule in it, in order.
 Install and run autor3search-python on this repository, then optimize it.
 
 Setup:
+0. Run git status. If the working tree has changes, STOP and ask me to
+   commit or stash them first.
 1. uv tool install autor3search   (or: pipx install autor3search)
    Already installed? Upgrade first: uv tool upgrade autor3search
    (or: pipx upgrade autor3search). Versions before 0.4.3 pick the wrong
