@@ -1,7 +1,9 @@
+import json
 import os
 import re
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -471,3 +473,50 @@ def test_compile_exclude_does_not_swallow_a_windows_relative_path():
     assert re.search(pattern, r".\.hidden.py") is not None
     assert re.search(pattern, r"build\stale.py") is not None
     assert re.search(pattern, "build/stale.py") is not None
+
+
+_WHERE = (
+    "import json, os, sys\n"
+    "import pkg\n"
+    "print(json.dumps({'cwd': os.getcwd(), 'pkg': pkg.__file__, 'path': sys.path}))\n"
+)
+
+
+def test_each_side_imports_its_own_tree_from_any_harness_cwd_or_pwd(tmp_path, monkeypatch):
+    """Bug 2026-11-15: eval was suspected of measuring a different tree when it
+    ran with its cwd, or PWD, inside the clone. What a bench subprocess sees —
+    its cwd, its sys.path and the tree it imports the code from — must not
+    depend on where the harness itself was started."""
+    trees = {}
+    for name in ("baseline", "candidate"):
+        t = tmp_path / name
+        (t / "pkg").mkdir(parents=True)
+        (t / "pkg" / "__init__.py").write_text(f"SIDE = {name!r}\n")
+        trees[name] = t
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    cfg = config.default()
+
+    def observe():
+        out = {}
+        for name, t in trees.items():
+            r = runner.Runner(t, 60, env=runner.bench_env(t, cfg))
+            res = r.python_run("-c", _WHERE)
+            assert res.ok(), res.tail(20)
+            out[name] = json.loads(res.stdout)
+        return out
+
+    seen = []
+    for cwd in (trees["candidate"], elsewhere):
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("PWD", str(cwd))
+        seen.append(observe())
+    # PWD set to the clone while the cwd is elsewhere, the third case seen.
+    monkeypatch.setenv("PWD", str(trees["candidate"]))
+    seen.append(observe())
+
+    assert seen[0] == seen[1] == seen[2]
+    for name, t in trees.items():
+        got = seen[0][name]
+        assert Path(got["cwd"]).resolve() == t.resolve()
+        assert Path(got["pkg"]).resolve() == (t / "pkg" / "__init__.py").resolve()

@@ -1,5 +1,7 @@
+import dataclasses
 import json
 import pstats
+import sys
 from pathlib import Path
 
 import pytest
@@ -303,6 +305,43 @@ def test_profile_does_not_leak_the_other_passs_env_var(repo, monkeypatch, tmp_pa
     assert report.cpu_path.exists()
     assert report.mem_path.exists()
     pstats.Stats(str(report.cpu_path))  # the real cpu.prof, not garbage
+
+
+_NO_HARNESS_PYTHON = """#!{exe}
+# The project's interpreter, as `uv tool` / `pipx` users have it: pytest and
+# pytest-benchmark importable, autor3search not.
+import runpy, sys
+
+
+class _NoHarness:
+    def find_spec(self, name, path=None, target=None):
+        if name == "autor3search" or name.startswith("autor3search."):
+            raise ModuleNotFoundError(f"No module named {{name!r}}", name=name)
+        return None
+
+
+sys.meta_path.insert(0, _NoHarness())
+assert sys.argv[1] == "-m", sys.argv
+sys.argv = [sys.argv[2], *sys.argv[3:]]
+runpy.run_module(sys.argv[0], run_name="__main__", alter_sys=True)
+"""
+
+
+@pytest.mark.slow
+def test_profile_works_under_a_project_interpreter_without_the_harness(repo, tmp_path):
+    """Regression: `-p autor3search.profiling` needed the harness installed in
+    the project's interpreter, and failed with "No module named
+    'autor3search'" under the README's `uv tool` / `pipx` install."""
+    fake = tmp_path / "bin" / "python"
+    fake.parent.mkdir()
+    fake.write_text(_NO_HARNESS_PYTHON.format(exe=sys.executable))
+    fake.chmod(0o755)
+    cfg = dataclasses.replace(config.load(repo / config.CONFIG_PATH), python=str(fake))
+
+    report = profile.run_profile(repo, ["tests/test_mod.py::test_w"], cfg)
+
+    assert "work" in report.cpu_top
+    assert "mod.py" in report.mem_top
 
 
 def test_run_profile_refuses_a_symlinked_output_directory(repo, tmp_path):

@@ -1,9 +1,12 @@
 """A pytest plugin that profiles a benchmark session.
 
-Shipped inside this package, so it is importable whenever the harness runs and
-nothing has to be added to the repository being optimized. Loaded with
-`-p autor3search.profiling`, and activated only when the corresponding
-environment variable names an output path — so importing it is always harmless.
+Shipped inside this package, so nothing has to be added to the repository being
+optimized. The measuring interpreter normally cannot import this package, so
+`profile.run_profile` copies this one file to a temporary directory, puts that
+first on PYTHONPATH and loads it with `-p _autor3search_profiling` (see
+`profile.PLUGIN_MODULE`). It must therefore import nothing from autor3search.
+It is activated only when the corresponding environment variable names an
+output path — so importing it is always harmless.
 
 This module is also imported directly (not just loaded as a "-p" plugin) by
 `profile.py`, in the harness's OWN process — which, per the README's install

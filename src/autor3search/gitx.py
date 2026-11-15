@@ -106,6 +106,20 @@ def path_in_tree(d: str | Path, commit: str, path: str) -> bool:
     return True
 
 
+def is_ancestor(d: str | Path, commit: str, of: str = "HEAD") -> bool:
+    """True when `commit` is `of` or one of its ancestors.
+
+    False for a commit that a `git reset` or a rebase took off the branch,
+    and for one that no longer exists at all. `git merge-base --is-ancestor`
+    exits 1 for "no", and 128 for an unknown commit.
+    """
+    try:
+        _git(d, "merge-base", "--is-ancestor", commit, of)
+    except GitError:
+        return False
+    return True
+
+
 def changed_since(d: str | Path, commit: str) -> list[str]:
     """Repo-relative paths modified since `commit`, including untracked files.
 

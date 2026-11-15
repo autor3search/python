@@ -26,13 +26,10 @@ _EXTENSION_SIGNALS = ("Cargo.toml", "meson.build")
 # nothing can be measured at all: a FAIL.
 _MEASURE_MODULES = ("pytest", "pytest_benchmark")
 
-# autor3search is needed only because `profile` loads its plugin with
-# `-p autor3search.profiling` inside the measuring interpreter, not the
-# one running the harness. `eval` and `bench` never import it there, so its
-# absence is a WARN naming the one thing it breaks, not a repo-wide FAIL.
-_PROFILE_MODULES = ("autor3search",)
-
-_REQUIRED_MODULES = _MEASURE_MODULES + _PROFILE_MODULES
+# autor3search itself is not on this list: no command imports it inside the
+# measuring interpreter. `profile` loads a copy of its plugin file from a
+# temporary directory (see profile.PLUGIN_MODULE).
+_REQUIRED_MODULES = _MEASURE_MODULES
 
 _MISSING_MODULE_RE = re.compile(r"No module named ['\"]([\w.]+)['\"]")
 
@@ -254,12 +251,7 @@ def check_benchmark_tooling(python: str = "") -> Finding:
     """Everything the measuring interpreter must be able to import.
 
     pytest and pytest-benchmark are a FAIL: without them nothing can be
-    measured at all. `autor3search` is only a WARN — it is on this list
-    solely because `profile` runs `-p autor3search.profiling` under
-    exactly this interpreter, not under the one running the harness, so its
-    absence breaks `profile` alone. Configure `python` to a venv without the
-    harness installed and `eval` still measures fine while `profile` fails at
-    collection — a confusing failure at 3am if this check does not say so.
+    measured at all. The harness itself need not be importable there.
     """
     exe = python or sys.executable
     script = (
@@ -287,20 +279,12 @@ def check_benchmark_tooling(python: str = "") -> Finding:
             f"{' '.join(m.replace('_', '-') for m in _REQUIRED_MODULES)}"
         )
         hard = [m for m in _MEASURE_MODULES if m in missing]
-        soft = [m for m in _PROFILE_MODULES if m in missing]
         if hard:
             return Finding(
                 "pytest-benchmark",
                 f"{_describe(hard)} not importable by {exe} — nothing can be measured "
                 f"without it. {fix}",
                 Severity.FAIL,
-            )
-        if soft:
-            return Finding(
-                "pytest-benchmark",
-                f"{_describe(soft)} not importable by {exe} — `profile` needs it to load "
-                f"its plugin there; `eval` and `bench` do not. {fix}",
-                Severity.WARN,
             )
         return Finding(
             "pytest-benchmark",
