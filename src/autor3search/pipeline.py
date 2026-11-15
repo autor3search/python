@@ -14,8 +14,10 @@ unattended loop tell "your change was refused" from "the tool is broken".
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import fnmatch
 import hashlib
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -259,6 +261,36 @@ def present_forbidden_root_files(root: str | Path, baseline_commit: str) -> list
     )
 
 
+def busy_warning(load: float | None, cpus: int) -> str | None:
+    """The warning for one load reading, or None when none applies.
+
+    `load` is None when this platform has no load average (Windows).
+    """
+    if load is None or load <= cpus:
+        return None
+    return (
+        f"the machine was busy: the 1-minute load average was {load:.2f} on {cpus} CPUs "
+        f"after measuring, so these numbers can be noise"
+    )
+
+
+def _read_load() -> float | None:
+    try:
+        return os.getloadavg()[0]
+    except (OSError, AttributeError):  # pragma: no cover - Windows
+        return None
+
+
+def load_warnings(read_load: Callable[[], float | None] | None = None) -> list[str]:
+    """Read the load once, after measuring, and return what to warn about it.
+
+    Never changes a verdict: a busy machine makes the numbers weak, not wrong.
+    One reading can miss a short burst early in a long measurement.
+    """
+    w = busy_warning((read_load or _read_load)(), os.cpu_count() or 1)
+    return [w] if w else []
+
+
 def sha256_file(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -287,6 +319,9 @@ class Options:
     # Injectable so the gate logic is testable without spending real minutes
     # benchmarking. Defaults to measure.run.
     measure_fn: Callable[[measure.Options], tuple[benchio.Set, benchio.Set]] | None = None
+    # Reads the 1-minute load average after measuring; None means the real one.
+    # Injectable because a test cannot choose the machine's real load.
+    read_load: Callable[[], float | None] | None = None
 
 
 def evaluate(opts: Options) -> tuple[verdict.Result, Measurements | None]:
@@ -493,6 +528,9 @@ def evaluate(opts: Options) -> tuple[verdict.Result, Measurements | None]:
     #     Compares against measure_commit, not commit: the worktree is
     #     legitimately re-pointed after every KEEP.
     worktree = sd / state.WORKTREE_NAME
+    # A kept commit that was since taken off the branch must not stay the
+    # measurement baseline; see _rewind_measurement_baseline.
+    rewound = _rewind_measurement_baseline(root, sd, base, worktree, log)
     head = gitx.head_commit(worktree)
     if head != base.measure_commit:
         return (
@@ -552,6 +590,7 @@ def evaluate(opts: Options) -> tuple[verdict.Result, Measurements | None]:
         # vocabulary but MEASURE — reporting it as COMPILE would send an agent
         # to debug a build that in fact compiled fine.
         return verdict.gate(verdict.Status.CRASH, verdict.Reason.MEASURE, str(e)), None
+    busy = load_warnings(opts.read_load)
 
     # 7. Score. Only the declared set counts, matched by base name so a config
     #    entry covers every parametrization of that benchmark.
@@ -560,6 +599,9 @@ def evaluate(opts: Options) -> tuple[verdict.Result, Measurements | None]:
     deltas = benchio.compare_all(base_set, cand_set)
     score = stats.geomean([d.ratio for d in deltas])
     result = verdict.decide(deltas, score, cfg.max_regress_pct, cfg.min_effect_pct)
+    extra = ([rewound] if rewound else []) + busy
+    if extra:
+        result = dataclasses.replace(result, warnings=(*result.warnings, *extra))
 
     # 8. Advance the measurement baseline on KEEP. Without this, every
     #    experiment after the first kept one is measured against the run's
@@ -587,3 +629,47 @@ def _advance_measurement_baseline(
     gitx.checkout_detached(worktree, new_commit)
     base.measure_commit = new_commit
     base.save(sd / state.BASELINE_FILE)
+
+
+def kept_on_branch(root: Path, rows: list[results.Row]) -> list[str]:
+    """Commits of KEEP rows that are still ancestors of HEAD, oldest first."""
+    return [
+        r.commit
+        for r in rows
+        if r.status.upper() == "KEEP" and r.commit and gitx.is_ancestor(root, r.commit)
+    ]
+
+
+def _rewind_measurement_baseline(
+    root: Path, sd: Path, base: state.Baseline, worktree: Path, log: IO[str] | None
+) -> str | None:
+    """Move the measure pointer back when its commit left the branch.
+
+    A KEEP moves `measure_commit` to the kept commit. If that commit is later
+    taken off the branch (`git reset --hard HEAD~1`, a rebase that drops it),
+    every later candidate would be measured against code that is no longer in
+    the tree. So the pointer goes back to the newest KEEP commit in results.tsv
+    that is still an ancestor of HEAD, or to the run's own start commit. The
+    worktree moves with it, before the integrity check below compares the two.
+
+    Returns a warning for the verdict, or None when nothing moved.
+    """
+    if gitx.is_ancestor(root, base.measure_commit):
+        return None
+    try:
+        rows = results.load(root / results.PATH)
+    except results.ResultsError:
+        rows = []
+    kept = kept_on_branch(root, rows)
+    target = kept[-1] if kept else base.commit
+    dropped = base.measure_commit
+    gitx.checkout_detached(worktree, target)
+    base.measure_commit = target
+    base.save(sd / state.BASELINE_FILE)
+    msg = (
+        f"the kept commit {dropped} is no longer on this branch, so this experiment was "
+        f"measured against {target} instead"
+    )
+    if log is not None:
+        log.write(msg + "\n")
+    return msg

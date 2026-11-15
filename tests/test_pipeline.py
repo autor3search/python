@@ -97,6 +97,7 @@ def options(run, monkeypatch, measure_fn=None, skip_gates=True):
         cfg=cfg,
         base=base,
         measure_fn=measure_fn or fake_measure(),
+        read_load=lambda: 0.0,
     )
 
 
@@ -784,6 +785,94 @@ def test_no_spurious_baseline_tampered_on_the_eval_after_a_keep(run, monkeypatch
     result, _ = pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(1.0, 1.0, n=8)))
     assert result.reason is not verdict.Reason.BASELINE_TAMPERED
     assert result.status is verdict.Status.DISCARD
+
+
+def test_a_keep_reset_off_the_branch_stops_being_the_measurement_baseline(run, monkeypatch):
+    """Regression: after a KEEP commit was removed with `git reset --hard
+    HEAD~1`, measure_commit stayed on it, so every later candidate was measured
+    against code that was no longer in the tree."""
+    from autor3search import results
+
+    repo, sd, base = run
+    (repo / "pkg" / "mod.py").write_text("def work():\n    return 4950\n")
+    kept = commit_all(repo, "faster")
+    result, _ = pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(2.0, 1.0, n=8)))
+    assert result.status is verdict.Status.KEEP
+    results.append(repo / results.PATH, results.Row(kept, 0.5, -50.0, "KEEP", "faster"))
+    assert state.load_baseline(sd / state.BASELINE_FILE).measure_commit == kept
+
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+    result, _ = pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(1.0, 1.0, n=8)))
+
+    assert result.reason is not verdict.Reason.BASELINE_TAMPERED
+    assert state.load_baseline(sd / state.BASELINE_FILE).measure_commit == base.commit
+    assert gitx.head_commit(sd / state.WORKTREE_NAME) == base.commit
+    assert any(kept in w and "no longer on this branch" in w for w in result.warnings)
+
+
+def test_the_rewind_goes_to_the_newest_keep_still_on_the_branch(run, monkeypatch):
+    from autor3search import results
+
+    repo, sd, base = run
+    commits = []
+    for body in ("return 4950", "return 4950  # second"):
+        (repo / "pkg" / "mod.py").write_text(f"def work():\n    {body}\n")
+        # Only pkg/: results.tsv is gitignored in a real run, so no commit holds it.
+        git(repo, "add", "pkg")
+        git(repo, "commit", "-q", "-m", body)
+        c = git(repo, "rev-parse", "--short=7", "HEAD")
+        result, _ = pipeline.evaluate(
+            options(run, monkeypatch, measure_fn=fake_measure(2.0, 1.0, n=8))
+        )
+        assert result.status is verdict.Status.KEEP
+        results.append(repo / results.PATH, results.Row(c, 0.5, -50.0, "KEEP", body))
+        commits.append(c)
+
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+    pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(1.0, 1.0, n=8)))
+    assert state.load_baseline(sd / state.BASELINE_FILE).measure_commit == commits[0]
+
+
+def test_a_keep_still_on_the_branch_is_not_rewound(run, monkeypatch):
+    repo, sd, base = run
+    (repo / "pkg" / "mod.py").write_text("def work():\n    return 4950\n")
+    kept = commit_all(repo, "faster")
+    pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(2.0, 1.0, n=8)))
+    (repo / "pkg" / "mod.py").write_text("def work():\n    return 4950  # later\n")
+    commit_all(repo, "later")
+    result, _ = pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(1.0, 1.0, n=8)))
+    assert state.load_baseline(sd / state.BASELINE_FILE).measure_commit == kept
+    assert not any("no longer on this branch" in w for w in result.warnings)
+
+
+# --- the busy-machine warning -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("load", "cpus", "want"),
+    [(17.0, 10, ["17.00", "10 CPUs"]), (10.0, 10, None), (2.0, 10, None), (None, 10, None)],
+)
+def test_busy_warning(load, cpus, want):
+    got = pipeline.busy_warning(load, cpus)
+    if want is None:
+        assert got is None
+    else:
+        assert got is not None
+        for w in want:
+            assert w in got
+
+
+def test_eval_warns_when_the_machine_is_busy_and_keeps_the_verdict(run, monkeypatch):
+    opts = options(run, monkeypatch, measure_fn=fake_measure(2.0, 1.0, n=8))
+    opts.read_load = lambda: 1e6
+    result, _ = pipeline.evaluate(opts)
+    assert result.status is verdict.Status.KEEP  # a warning never changes the verdict
+    assert any("1000000.00" in w and "busy" in w for w in result.warnings)
+
+
+def test_eval_is_quiet_on_a_quiet_machine(run, monkeypatch):
+    result, _ = pipeline.evaluate(options(run, monkeypatch, measure_fn=fake_measure(2.0, 1.0, n=8)))
+    assert not any("busy" in w for w in result.warnings)
 
 
 def test_is_dependency_file():

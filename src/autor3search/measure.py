@@ -6,10 +6,14 @@ frequency scaling and background load to the code change. Alternating the two
 sides within a single session cancels that drift, because both sides experience
 the same conditions.
 
-One asymmetry remains and is documented rather than hidden: each round measures
-the baseline a moment before the candidate, so on a steadily warming machine the
-candidate is sampled a fraction hotter. Interleaving cancels the drift *between*
-rounds, which dominates; this sub-second offset does not.
+The two sides also SWAP ORDER on every round — baseline first on even rounds,
+candidate first on odd ones. Alternating rounds alone cancels drift BETWEEN
+rounds, but a fixed order within each round leaves a constant bias: the
+candidate is always sampled one slot later, so any drift that is monotonic
+across a round (a CPU still warming up, a background job that starts mid-run)
+lands on the candidate in the same direction every time. Averaging over rounds
+does not remove a bias. Swapping makes each side take the first slot half the
+time; an even count (the default is 10) cancels it exactly.
 """
 
 from __future__ import annotations
@@ -107,23 +111,30 @@ def interleave(
     total = rounds + (1 if warmup else 0)
     base_set, cand_set = benchio.Set(), benchio.Set()
     for i in range(total):
-        try:
-            b = base(i)
-        except MeasureError:
-            raise
-        except Exception as e:
-            raise MeasureError(f"baseline round {i}: {e}") from e
-        try:
-            c = cand(i)
-        except MeasureError:
-            raise
-        except Exception as e:
-            raise MeasureError(f"candidate round {i}: {e}") from e
+        b, c = _round(i, base, cand)
         if warmup and i == 0:
             continue
         base_set.add(b)
         cand_set.add(c)
     return base_set, cand_set
+
+
+def _round(i: int, base: RoundFn, cand: RoundFn) -> tuple[benchio.Set, benchio.Set]:
+    """Run both sides once: baseline first on even rounds, candidate first on odd
+    ones. Returns (baseline, candidate) however they were run. See the module
+    docstring for why the order alternates."""
+    sides = [("baseline", base), ("candidate", cand)]
+    if i % 2 == 1:
+        sides.reverse()
+    out: dict[str, benchio.Set] = {}
+    for label, fn in sides:
+        try:
+            out[label] = fn(i)
+        except MeasureError:
+            raise
+        except Exception as e:
+            raise MeasureError(f"{label} round {i}: {e}") from e
+    return out["baseline"], out["candidate"]
 
 
 @dataclass

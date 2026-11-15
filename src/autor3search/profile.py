@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import pstats
 import re
+import shutil
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +27,16 @@ _TOP = 20
 _SITE_WIDTH = 60
 _SIZE_WIDTH = 12
 _BLOCKS_WIDTH = 12
+
+# The name the plugin is loaded under inside the measuring interpreter. That is
+# the project's interpreter (`python` in config.toml), which normally has no
+# autor3search installed: the README installs the harness with `uv tool` or
+# `pipx`, in isolation. So `-p autor3search.profiling` failed there with "No
+# module named 'autor3search'". profiling.py imports only the standard library
+# and pytest, so a copy of that one file under a name no project uses is put
+# first on PYTHONPATH instead — the way `eval` measures: with nothing from the
+# harness installed in the project's environment.
+PLUGIN_MODULE = "_autor3search_profiling"
 
 # Both env vars a pass could ever see, so each subprocess can be started with
 # only the one it needs, regardless of what the parent environment carries.
@@ -214,7 +227,29 @@ def run_profile(
     cpu_path.unlink(missing_ok=True)
     mem_path.unlink(missing_ok=True)
 
-    base_env = runner.bench_env(root, cfg)
+    with tempfile.TemporaryDirectory(prefix="autor3search-profile-") as plugin_dir:
+        shutil.copyfile(profiling.__file__, Path(plugin_dir) / f"{PLUGIN_MODULE}.py")
+        base_env = runner.bench_env(root, cfg)
+        base_env["PYTHONPATH"] = os.pathsep.join([plugin_dir, base_env["PYTHONPATH"]])
+        _run_passes(root, node_ids, cfg, log, base_env, cpu_path, mem_path)
+
+    return Report(
+        cpu_top=format_cpu(cpu_path, root=root),
+        mem_top=format_mem(mem_path, root=root),
+        cpu_path=cpu_path,
+        mem_path=mem_path,
+    )
+
+
+def _run_passes(
+    root: Path,
+    node_ids: Sequence[str],
+    cfg: Config,
+    log: IO[str] | None,
+    base_env: dict[str, str],
+    cpu_path: Path,
+    mem_path: Path,
+) -> None:
     # The CPU pass keeps using pytest-benchmark's own timing loop — cProfile
     # doesn't care how many rounds run. The memory pass explicitly disables
     # that plugin ("-p no:benchmark") and supplies its own `benchmark`
@@ -264,7 +299,7 @@ def run_profile(
             "-p",
             "no:cacheprovider",
             "-p",
-            "autor3search.profiling",
+            PLUGIN_MODULE,
             "--import-mode=importlib",
             *extra_args,
             "--",  # see runner.validate_node_ids: node_ids are untrusted, never shell-typed
@@ -274,10 +309,3 @@ def run_profile(
             raise ProfileError(f"profiling pass timed out after {cfg.timeout}")
         if not res.ok():
             raise ProfileError(f"profiling pass failed (exit {res.exit_code}):\n{res.tail(30)}")
-
-    return Report(
-        cpu_top=format_cpu(cpu_path, root=root),
-        mem_top=format_mem(mem_path, root=root),
-        cpu_path=cpu_path,
-        mem_path=mem_path,
-    )

@@ -421,10 +421,16 @@ compared to the last thing that was kept" — never "is the tree better than
 when the run started" — and a long run's total progress is the *product* of
 every kept score, which is what `report`'s cumulative speedup computes.
 
+If a kept commit is later taken off the branch (`git reset --hard HEAD~1`, or a
+rebase that drops it), the next `eval` moves `measure_commit` back to the
+newest kept commit in `results.tsv` that is still an ancestor of `HEAD` (or to
+`commit`), and says so in `warnings`. On a run branch, `report` leaves such a
+commit out of the cumulative speedup and names it.
+
 ### When the measurement cannot carry the verdict
 
-Two warnings appear in `--json` output (as `warnings`) and above `VERDICT:` in
-human output. Neither ever changes the decision; both say the numbers beside
+These warnings appear in `--json` output (as `warnings`) and above `VERDICT:` in
+human output. None ever changes the decision; each says the numbers beside
 them should not be over-read:
 
 - **Too few rounds for a confidence interval.** The reported medians are real,
@@ -436,6 +442,9 @@ them should not be over-read:
   every experiment will `DISCARD` regardless of how large the real
   improvement is. This is a configuration problem (raise `count`), not a
   reason to keep burning experiments on it.
+- **The machine was busy.** After it measures, `eval` reads the 1-minute load
+  average and warns if it is above the CPU count. One reading can miss a short
+  burst early in a long measurement, and Windows has no load reading.
 
 ## Limitations
 
@@ -596,10 +605,8 @@ that takes the `benchmark` fixture, or carries `@pytest.mark.benchmark(...)`,
 is discovered automatically. `pytest` and `pytest-benchmark` must be
 installed in the environment that will run the benchmarks — `doctor` reports
 FAIL if either is missing, since nothing can be measured without them.
-`autor3search-python` itself is only needed there because `profile` loads it
-as a plugin inside that same interpreter; `eval` does not need it, so
-`doctor` reports a WARN naming `profile`, not a FAIL, when only that one is
-missing.
+`autor3search-python` itself is not needed there: `profile` loads its plugin
+from a copy of that one file, not from an installed package.
 
 One warning worth taking seriously: benchmarking a cold, rarely-exercised
 path produces numbers that are entirely real and entirely useless — a 90%

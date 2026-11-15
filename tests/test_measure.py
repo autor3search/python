@@ -36,7 +36,47 @@ def test_interleave_alternates_sides():
         return fn
 
     measure.interleave(3, False, side("b"), side("c"))
-    assert order == ["b0", "c0", "b1", "c1", "b2", "c2"]
+    assert order == ["b0", "c0", "c1", "b1", "b2", "c2"]
+
+
+def test_interleave_swaps_which_side_runs_first_every_round():
+    """A fixed baseline-then-candidate order puts any drift within a round on
+    the candidate every time. Each side must run first in half the rounds, and
+    the results must still come back on the right side."""
+    order = []
+
+    def side(label, value):
+        def fn(i):
+            order.append(label)
+            s = benchio.Set()
+            s.record("x", value)
+            return s
+
+        return fn
+
+    base, cand = measure.interleave(4, True, side("b", 2.0), side("c", 1.0))
+    firsts = order[0::2]
+    assert firsts == ["b", "c", "b", "c", "b"]  # warmup round 0, then rounds 1..4
+    assert firsts[1:].count("b") == firsts[1:].count("c")  # measured rounds: an even split
+    assert base.values("x") == [2.0] * 4
+    assert cand.values("x") == [1.0] * 4
+
+
+def test_a_failing_round_names_the_side_that_ran_first_on_an_odd_round():
+    def boom_on_odd(i):
+        if i == 1:
+            raise RuntimeError("round exploded")
+        return const(1.0)(i)
+
+    calls = []
+
+    def base(i):
+        calls.append(i)
+        return const(2.0)(i)
+
+    with pytest.raises(measure.MeasureError, match="candidate round 1"):
+        measure.interleave(3, False, base, boom_on_odd)
+    assert calls == [0]  # on round 1 the candidate ran first, so the baseline never did
 
 
 def test_warmup_round_is_run_and_discarded():
